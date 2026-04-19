@@ -1,0 +1,86 @@
+version: '3.8'
+services:
+
+  mongodb:
+    image: mongo:7.0
+    container_name: smartshelfx-mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASS:-yourpassword}
+      MONGO_INITDB_DATABASE: smartshelfx
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+    networks:
+      - smartshelfx-net
+    command: ["--replSet", "rs0"]
+
+  mongo-init:
+    image: mongo:7.0
+    depends_on: [mongodb]
+    command: >
+      mongosh --host mongodb:27017 -u ${MONGO_ROOT_USER:-admin} -p ${MONGO_ROOT_PASS:-yourpassword}
+      --eval "try { rs.status() } catch(e) { rs.initiate() }"
+    networks:
+      - smartshelfx-net
+
+  forecast-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.forecast
+    container_name: smartshelfx-forecast
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    networks:
+      - smartshelfx-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  api-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: smartshelfx-api
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - NODE_ENV=production
+      - MONGO_URI=mongodb://${MONGO_ROOT_USER:-admin}:${MONGO_ROOT_PASS:-yourpassword}@mongodb:27017/smartshelfx?authSource=admin
+      - FORECAST_SERVICE_URL=http://forecast-service:8000
+    env_file: .env.production
+    depends_on:
+      - mongodb
+      - forecast-service
+    networks:
+      - smartshelfx-net
+    volumes:
+      - uploads_data:/app/uploads
+
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    container_name: smartshelfx-client
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - api-server
+    networks:
+      - smartshelfx-net
+
+volumes:
+  mongo_data:
+  uploads_data:
+
+networks:
+  smartshelfx-net:
+    driver: bridge
